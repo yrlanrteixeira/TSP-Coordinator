@@ -1,4 +1,3 @@
-# config/default_config.py
 DEFAULT_CONFIG = {
     'coordinator': {
         'host': 'localhost',

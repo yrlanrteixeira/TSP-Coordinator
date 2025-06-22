@@ -1,3 +1,7 @@
 """
-Coordinator module for managing workers and task distribution in the TSP system.
-""" 
+Coordinator package for managing distributed TSP computation.
+"""
+
+from .coordinator import Coordinator, WorkerInfo, WorkerStatus
+
+__all__ = ['Coordinator', 'WorkerInfo', 'WorkerStatus'] 
