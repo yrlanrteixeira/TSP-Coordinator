@@ -1,0 +1,29 @@
+{
+  "result": {
+    "status": "completed",
+    "best_solution": {
+      "best_path": [
+        "City_1",
+        "City_4",
+        "City_3",
+        "City_6",
+        "City_2",
+        "City_5"
+      ],
+      "best_cost": 216.37962719062116,
+      "found_by": "WORKER_432E4C79"
+    },
+    "total_tasks": 3,
+    "execution_stats": {
+      "total_workers": 3,
+      "tasks_per_worker": {
+        "WORKER_324FDE12": 1,
+        "WORKER_432E4C79": 1,
+        "WORKER_1A6F080D": 1
+      },
+      "active_workers": 3
+    }
+  },
+  "total_time": 0.10532808303833008,
+  "timestamp": 1750637161.1618106
+}
