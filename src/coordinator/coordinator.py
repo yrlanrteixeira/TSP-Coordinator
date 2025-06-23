@@ -1,3 +1,4 @@
+import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
@@ -82,7 +83,7 @@ class Coordinator(TCPServer):
                 self.send_message(sender_socket, ack_message)
 
                 # Se há tarefas pendentes, atribui uma
-                self._assign_pending_tasks()
+                self._assign_pending_tasks_locked()
             else:
                 self.logger.warning(f"Worker {worker_id} already registered")
 
@@ -159,7 +160,7 @@ class Coordinator(TCPServer):
                 del self.workers[worker_id]
 
                 # Tenta reatribuir tarefas pendentes
-                self._assign_pending_tasks()
+                self._assign_pending_tasks_locked()
 
     def _handle_task_request(self, message: Message, sender_socket):
         """Processa solicitação de problema TSP do cliente"""
@@ -167,78 +168,161 @@ class Coordinator(TCPServer):
         problem_data = message.data
 
         self.logger.info("Received TSP problem from client")
+        self.logger.info(f"Problem has {len(problem_data.get('cities', []))} cities")
         self.current_problem = problem_data
 
-        # Gera subtarefas
-        self._generate_tasks(problem_data)
+        # Process task generation in a separate thread to avoid blocking
+        def process_task_generation():
+            try:
+                # Gera subtarefas
+                self.logger.info("Starting task generation...")
+                self._generate_tasks(problem_data)
+                self.logger.info("Task generation completed")
 
-        # Inicia distribuição
-        self._assign_pending_tasks()
+                # Inicia distribuição
+                self.logger.info("Starting task assignment...")
+                self._assign_pending_tasks()
+                self.logger.info("Task assignment completed")
 
-        # Envia confirmação ao cliente
-        ack_message = self.create_message(
-            MessageType.REGISTER_ACK,
-            {"status": "problem_received", "total_tasks": len(self.pending_tasks)},
-        )
-        self.send_message(sender_socket, ack_message)
+                # Envia confirmação ao cliente
+                ack_message = self.create_message(
+                    MessageType.REGISTER_ACK,
+                    {
+                        "status": "problem_received",
+                        "total_tasks": len(self.pending_tasks),
+                    },
+                )
+                self.send_message(sender_socket, ack_message)
+
+            except Exception as e:
+                self.logger.error(f"Error in task generation: {e}")
+                # Send error message to client
+                error_message = self.create_message(
+                    MessageType.REGISTER_ACK,
+                    {"status": "error", "error": str(e)},
+                )
+                self.send_message(sender_socket, error_message)
+
+        # Start task generation in background thread
+        task_thread = threading.Thread(target=process_task_generation, daemon=True)
+        task_thread.start()
 
     def _generate_tasks(self, problem_data: dict):
         """Gera subtarefas a partir do problema TSP"""
+        self.logger.info("_generate_tasks: entered")
         distance_matrix = problem_data["distance_matrix"]
+        self.logger.info("_generate_tasks: got distance_matrix")
         cities = problem_data["cities"]
+        self.logger.info("_generate_tasks: got cities")
 
-        # Usa TaskDistributor para dividir o problema
-        tasks = self.task_distributor.distribute_tsp_tasks(
-            distance_matrix, cities, num_workers=len(self.workers)
+        # Only lock to read worker statuses
+        self.logger.info("_generate_tasks: about to acquire worker_lock")
+        with self.worker_lock:
+            self.logger.info("_generate_tasks: acquired worker_lock")
+            available_workers = len(
+                [w for w in self.workers.values() if w.status == WorkerStatus.IDLE]
+            )
+            self.logger.info(f"Total workers: {len(self.workers)}")
+            for worker_id, worker_info in self.workers.items():
+                self.logger.info(
+                    f"Worker {worker_id}: status={worker_info.status.value}"
+                )
+
+        # Now OUTSIDE the lock, do the rest!
+        self.logger.info(
+            f"Generating tasks for {len(cities)} cities with {available_workers} available workers"
         )
+        if available_workers == 0:
+            self.logger.warning("No available workers found! Cannot generate tasks.")
+            return
 
+        self.logger.info("Calling TaskDistributor.distribute_tsp_tasks with timeout...")
+        tasks = None
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self.task_distributor.distribute_tsp_tasks,
+                    distance_matrix,
+                    cities,
+                    max(1, available_workers),
+                )
+                tasks = future.result(timeout=10)  # 10 seconds timeout
+            self.logger.info(f"TaskDistributor returned {len(tasks)} tasks")
+        except concurrent.futures.TimeoutError:
+            self.logger.error("Timeout in task distribution!")
+            return
+        except Exception as e:
+            self.logger.error(f"Error in task distribution: {e}")
+            return
+
+        self.logger.info("_generate_tasks: got tasks, clearing old tasks")
         self.pending_tasks.clear()
         self.assigned_tasks.clear()
         self.completed_tasks.clear()
 
+        self.logger.info("_generate_tasks: adding new tasks")
         for i, task in enumerate(tasks):
             task_id = f"task_{i}"
             self.pending_tasks[task_id] = task
 
-        self.logger.info(f"Generated {len(tasks)} subtasks")
+        self.logger.info(
+            f"Generated {len(tasks)} subtasks for {available_workers} workers"
+        )
+        for i, task in enumerate(tasks):
+            work_size = task.get("estimated_work_size", 0)
+            self.logger.debug(f"Task {i}: estimated work size = {work_size}")
+        self.logger.info("_generate_tasks: completed")
+
+    def _assign_pending_tasks_locked(self):
+        """Atribui tarefas pendentes para workers disponíveis (deve ser chamado com worker_lock já adquirido)"""
+        idle_workers = [
+            worker_id
+            for worker_id, worker_info in self.workers.items()
+            if worker_info.status == WorkerStatus.IDLE
+        ]
+
+        self.logger.debug(
+            f"Assigning tasks - {len(self.pending_tasks)} pending, {len(idle_workers)} idle workers"
+        )
+
+        # Atribui tarefas para workers disponíveis
+        for worker_id in idle_workers:
+            if not self.pending_tasks:
+                break
+
+            # Pega primeira tarefa pendente
+            task_id = next(iter(self.pending_tasks))
+            task_data = self.pending_tasks.pop(task_id)
+
+            # Atribui para worker
+            self.assigned_tasks[task_id] = worker_id
+            self.workers[worker_id].status = WorkerStatus.BUSY
+            self.workers[worker_id].current_task_id = task_id
+
+            # Envia tarefa para worker
+            task_message = self.create_message(
+                MessageType.TASK_ASSIGNMENT,
+                {"task_id": task_id, "task_data": task_data},
+            )
+
+            if self.send_to_client(worker_id, task_message):
+                self.logger.info(f"Task {task_id} assigned to worker {worker_id}")
+                work_size = task_data.get("estimated_work_size", 0)
+                self.logger.debug(f"Task {task_id} work size: {work_size}")
+            else:
+                # Falha ao enviar, volta tarefa para pendentes
+                self.logger.error(
+                    f"Failed to send task {task_id} to worker {worker_id}"
+                )
+                self.pending_tasks[task_id] = task_data
+                del self.assigned_tasks[task_id]
+                self.workers[worker_id].status = WorkerStatus.IDLE
+                self.workers[worker_id].current_task_id = None
 
     def _assign_pending_tasks(self):
         """Atribui tarefas pendentes para workers disponíveis"""
         with self.worker_lock:
-            idle_workers = [
-                worker_id
-                for worker_id, worker_info in self.workers.items()
-                if worker_info.status == WorkerStatus.IDLE
-            ]
-
-            # Atribui tarefas para workers disponíveis
-            for worker_id in idle_workers:
-                if not self.pending_tasks:
-                    break
-
-                # Pega primeira tarefa pendente
-                task_id = next(iter(self.pending_tasks))
-                task_data = self.pending_tasks.pop(task_id)
-
-                # Atribui para worker
-                self.assigned_tasks[task_id] = worker_id
-                self.workers[worker_id].status = WorkerStatus.BUSY
-                self.workers[worker_id].current_task_id = task_id
-
-                # Envia tarefa para worker
-                task_message = self.create_message(
-                    MessageType.TASK_ASSIGNMENT,
-                    {"task_id": task_id, "task_data": task_data},
-                )
-
-                if self.send_to_client(worker_id, task_message):
-                    self.logger.info(f"Task {task_id} assigned to worker {worker_id}")
-                else:
-                    # Falha ao enviar, volta tarefa para pendentes
-                    self.pending_tasks[task_id] = task_data
-                    del self.assigned_tasks[task_id]
-                    self.workers[worker_id].status = WorkerStatus.IDLE
-                    self.workers[worker_id].current_task_id = None
+            self._assign_pending_tasks_locked()
 
     def _handle_task_result(self, message: Message, sender_socket):
         """Processa resultado de tarefa de worker"""
@@ -266,11 +350,17 @@ class Coordinator(TCPServer):
             self._update_best_solution(result_data)
 
             # Atribui próxima tarefa se disponível
-            self._assign_pending_tasks()
+            self._assign_pending_tasks_locked()
 
             # Verifica se terminou
+            self.logger.info(
+                f"Checking completion: pending={len(self.pending_tasks)}, assigned={len(self.assigned_tasks)}, completed={len(self.completed_tasks)}"
+            )
             if self._all_tasks_completed():
+                self.logger.info("All tasks completed! Sending final result...")
                 self._send_final_result()
+            else:
+                self.logger.info("Not all tasks completed yet")
 
     def _update_best_solution(self, result_data: dict):
         """Atualiza melhor solução encontrada"""
@@ -299,37 +389,54 @@ class Coordinator(TCPServer):
 
     def _send_final_result(self):
         """Envia resultado final para o cliente"""
+        self.logger.info(
+            f"_send_final_result called: client_socket={self.client_socket is not None}, best_solution={self.best_solution is not None}"
+        )
+
         if self.client_socket and self.best_solution:
+            self.logger.info("Creating final result message...")
             result_message = self.create_message(
                 MessageType.TASK_COMPLETE,
                 {
                     "status": "completed",
                     "best_solution": self.best_solution,
                     "total_tasks": len(self.completed_tasks),
-                    "execution_stats": self._get_execution_stats(),
+                    "execution_stats": self._get_execution_stats_locked(),
                 },
             )
 
-            self.send_message(self.client_socket, result_message)
-            self.logger.info("Final result sent to client")
+            self.logger.info("Sending final result message to client...")
+            success = self.send_message(self.client_socket, result_message)
+            if success:
+                self.logger.info("Final result sent to client")
+            else:
+                self.logger.error("Failed to send final result to client")
+        else:
+            self.logger.error(
+                f"Cannot send final result: client_socket={self.client_socket is not None}, best_solution={self.best_solution is not None}"
+            )
+
+    def _get_execution_stats_locked(self) -> dict:
+        """Coleta estatísticas de execução (deve ser chamado com worker_lock já adquirido)"""
+        return {
+            "total_workers": len(self.workers),
+            "tasks_per_worker": {
+                worker_id: worker_info.tasks_completed
+                for worker_id, worker_info in self.workers.items()
+            },
+            "active_workers": len(
+                [
+                    w
+                    for w in self.workers.values()
+                    if w.status != WorkerStatus.DISCONNECTED
+                ]
+            ),
+        }
 
     def _get_execution_stats(self) -> dict:
         """Coleta estatísticas de execução"""
         with self.worker_lock:
-            return {
-                "total_workers": len(self.workers),
-                "tasks_per_worker": {
-                    worker_id: worker_info.tasks_completed
-                    for worker_id, worker_info in self.workers.items()
-                },
-                "active_workers": len(
-                    [
-                        w
-                        for w in self.workers.values()
-                        if w.status != WorkerStatus.DISCONNECTED
-                    ]
-                ),
-            }
+            return self._get_execution_stats_locked()
 
     def start_coordinator(self):
         """Inicia o coordenador"""

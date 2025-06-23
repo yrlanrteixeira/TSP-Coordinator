@@ -28,7 +28,7 @@ class TSPClient(TCPClient):
         self.register_handler(MessageType.ERROR, self._handle_error)
 
     def solve_tsp_problem(
-        self, distance_matrix: List[List[float]], cities: List[str], timeout: int = 300
+        self, distance_matrix: List[List[float]], cities: List[str], timeout: int = 180
     ) -> Optional[Dict[str, Any]]:
         """
         Envia problema TSP para o coordenador e aguarda resultado

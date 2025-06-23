@@ -181,9 +181,21 @@ class Worker(TCPClient):
             start_permutations = tsp_data.get("start_permutations", [])
             end_permutations = tsp_data.get("end_permutations", [])
 
+            # Extrai novos parâmetros para abordagem baseada em índices
+            additional_params = {
+                "start_permutation_index": tsp_data.get("start_permutation_index"),
+                "end_permutation_index": tsp_data.get("end_permutation_index"),
+                "fixed_first_city": tsp_data.get("fixed_first_city"),
+            }
+
             # Resolve subtarefa TSP
+            self.logger.info(f"Task {task_id}: Params: {additional_params}")
             result = self._solve_tsp_subtask(
-                distance_matrix, cities, start_permutations, end_permutations
+                distance_matrix,
+                cities,
+                start_permutations,
+                end_permutations,
+                **additional_params,
             )
 
             end_time = time.time()
@@ -225,21 +237,39 @@ class Worker(TCPClient):
 
         finally:
             # Limpa tarefa atual
+            self.logger.info(f"Finished processing of task {task_id}")
             self.current_task = None
 
-    def _solve_tsp_subtask(self, distance_matrix, cities, start_perms, end_perms):
+    def _solve_tsp_subtask(
+        self, distance_matrix, cities, start_perms=None, end_perms=None, **kwargs
+    ):
         """Resolve subtarefa do TSP"""
         self.logger.debug(f"Solving TSP for {len(cities)} cities")
 
-        # Usa TSPSolver para resolver a subtarefa
-        result = self.tsp_solver.solve_partial_permutations(
-            distance_matrix=distance_matrix,
-            cities=cities,
-            start_permutations=start_perms,
-            end_permutations=end_perms,
-        )
+        # Extract additional parameters for new index-based approach
+        start_idx = kwargs.get("start_permutation_index")
+        end_idx = kwargs.get("end_permutation_index")
+        fixed_first_city = kwargs.get("fixed_first_city")
 
-        return result
+        # Prepare task data for TSPSolver
+        task_data = {
+            "distance_matrix": distance_matrix,
+            "cities": cities,
+            "task_type": "index_range",
+            "start_permutation_index": start_idx,
+            "end_permutation_index": end_idx,
+            "fixed_first_city": fixed_first_city,
+        }
+
+        # Use TSPSolver to solve the subtask
+        result = self.tsp_solver.solve_tsp_task(task_data)
+
+        # Convert result format to match expected output
+        return {
+            "best_path": result["best_path"],
+            "best_cost": result["best_cost"],
+            "permutations_checked": result["paths_evaluated"],
+        }
 
     def _handle_shutdown(self, message: Message, sender_socket=None):
         """Processa comando de shutdown do coordenador"""
