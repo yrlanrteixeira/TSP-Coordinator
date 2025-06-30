@@ -1,0 +1,8 @@
+┌─────────────┐    ┌─────────────┐    ┌─────────────────┐
+│   Cliente   │───▶│ Coordenador │───▶│ Workers (1..N)  │
+│             │    │             │    │                 │
+│ - Submete   │    │ - Gerencia  │    │ - Processam     │
+│   problemas │    │   workers   │    │   subtarefas    │
+│ - Recebe    │◀───│ - Distribui │◀───│ - Reportam      │
+│   resultados│    │   tarefas   │    │   resultados    │
+└─────────────┘    └─────────────┘    └─────────────────┘

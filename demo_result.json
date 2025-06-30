@@ -11,19 +11,19 @@
         "City_5"
       ],
       "best_cost": 216.37962719062116,
-      "found_by": "WORKER_432E4C79"
+      "found_by": "WORKER_A7806580"
     },
     "total_tasks": 3,
     "execution_stats": {
       "total_workers": 3,
       "tasks_per_worker": {
-        "WORKER_324FDE12": 1,
-        "WORKER_432E4C79": 1,
-        "WORKER_1A6F080D": 1
+        "WORKER_ED233E4D": 1,
+        "WORKER_A7806580": 1,
+        "WORKER_2278E344": 1
       },
       "active_workers": 3
     }
   },
-  "total_time": 0.10532808303833008,
-  "timestamp": 1750637161.1618106
+  "total_time": 0.11113095283508301,
+  "timestamp": 1751285182.4826999
 }
