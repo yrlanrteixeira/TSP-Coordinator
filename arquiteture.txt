@@ -6,3 +6,10 @@
 │ - Recebe    │◀───│ - Distribui │◀───│ - Reportam      │
 │   resultados│    │   tarefas   │    │   resultados    │
 └─────────────┘    └─────────────┘    └─────────────────┘
+
+
+1. REGISTER      → Worker se conecta ao coordenador
+2. TASK_REQUEST  → Cliente submete problema TSP
+3. TASK_ASSIGNMENT → Coordenador distribui subtarefas
+4. TASK_RESULT   → Workers enviam resultados parciais
+5. TASK_COMPLETE → Cliente recebe solução final
